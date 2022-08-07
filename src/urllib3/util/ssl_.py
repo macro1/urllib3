@@ -17,7 +17,8 @@ HAS_NEVER_CHECK_COMMON_NAME = False
 IS_PYOPENSSL = False
 IS_SECURETRANSPORT = False
 ALPN_PROTOCOLS = ["http/1.1"]
-USE_DEFAULT_SSLCONTEXT_CIPHERS = False
+OPENSSL_VERSION: str
+OPENSSL_VERSION_NUMBER: int
 
 _TYPE_VERSION_INFO = Tuple[int, int, int, str, int]
 
@@ -25,17 +26,20 @@ _TYPE_VERSION_INFO = Tuple[int, int, int, str, int]
 HASHFUNC_MAP = {32: md5, 40: sha1, 64: sha256}
 
 
-def _is_ge_openssl_v1_1_1(
+def _raise_if_openssl_unsupported(
     openssl_version_text: str, openssl_version_number: int
-) -> bool:
-    """Returns True for OpenSSL 1.1.1+ (>=0x10101000)
-    LibreSSL reports a version number of 0x20000000 for
-    OpenSSL version number so we need to filter out LibreSSL.
+) -> None:
+    """Raise ImportError if OpenSSL is not 1.1.1+
+
+    urllib3 v2.0 requires OpenSSL 1.1.1+
     """
-    return (
-        not openssl_version_text.startswith("LibreSSL")
-        and openssl_version_number >= 0x10101000
-    )
+    if (
+        openssl_version_text.startswith("LibreSSL")
+        or openssl_version_number < 0x10101000
+    ):
+        raise ImportError(
+            f"urllib3 v2.0 and later requires OpenSSL 1.1.1+. You are using {openssl_version_text}"
+        )
 
 
 def _is_openssl_issue_14579_fixed(
@@ -130,9 +134,8 @@ try:  # Do we have ssl at all?
         TLSVersion,
     )
 
-    USE_DEFAULT_SSLCONTEXT_CIPHERS = _is_ge_openssl_v1_1_1(
-        OPENSSL_VERSION, OPENSSL_VERSION_NUMBER
-    )
+    _raise_if_openssl_unsupported(OPENSSL_VERSION, OPENSSL_VERSION_NUMBER)
+
     PROTOCOL_SSLv23 = PROTOCOL_TLS
 
     # Setting SSLContext.hostname_checks_common_name = False didn't work before CPython
@@ -369,9 +372,8 @@ def create_urllib3_context(
     if ssl_maximum_version is not None:
         context.maximum_version = ssl_maximum_version
 
-    # Unless we're given ciphers defer to either system ciphers in
-    # the case of OpenSSL 1.1.1+ or use our own secure default ciphers.
-    if ciphers is not None or not USE_DEFAULT_SSLCONTEXT_CIPHERS:
+    # Unless we're given ciphers defer to either system ciphers.
+    if ciphers is not None:
         context.set_ciphers(ciphers or DEFAULT_CIPHERS)
 
     # Setting the default here, as we may have no ssl module on import

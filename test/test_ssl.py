@@ -1,5 +1,7 @@
+import re
 import ssl
-from typing import Any, Dict, Optional, Union
+from contextlib import nullcontext
+from typing import Any, ContextManager, Dict, Optional, Union
 from unittest import mock
 
 import pytest
@@ -98,7 +100,7 @@ class TestSSL:
 
         assert ssl_.create_urllib3_context(ciphers=ciphers) is context
 
-        if ciphers is None and ssl_.USE_DEFAULT_SSLCONTEXT_CIPHERS:
+        if ciphers is None:
             assert context.set_ciphers.call_count == 0
         else:
             assert context.set_ciphers.call_count == 1
@@ -172,25 +174,6 @@ class TestSSL:
 
         assert context.post_handshake_auth == expected_pha
 
-    @pytest.mark.parametrize("use_default_sslcontext_ciphers", [True, False])
-    def test_create_urllib3_context_default_ciphers(
-        self, monkeypatch: pytest.MonkeyPatch, use_default_sslcontext_ciphers: bool
-    ) -> None:
-        context = mock.create_autospec(ssl_.SSLContext)
-        context.set_ciphers = mock.Mock()
-        context.options = 0
-        monkeypatch.setattr(ssl_, "SSLContext", lambda *_, **__: context)
-        monkeypatch.setattr(
-            ssl_, "USE_DEFAULT_SSLCONTEXT_CIPHERS", use_default_sslcontext_ciphers
-        )
-
-        ssl_.create_urllib3_context()
-
-        if use_default_sslcontext_ciphers:
-            context.set_ciphers.assert_not_called()
-        else:
-            context.set_ciphers.assert_called_with(ssl_.DEFAULT_CIPHERS)
-
     @pytest.mark.parametrize(
         "kwargs",
         [
@@ -253,3 +236,29 @@ class TestSSL:
             ssl_.assert_fingerprint(
                 cert=None, fingerprint="55:39:BF:70:05:12:43:FA:1F:D1:BF:4E:E8:1B:07:1D"
             )
+
+    @pytest.mark.parametrize(
+        "openssl_version,openssl_version_number,expectation",
+        [
+            (
+                "OpenSSL 1.1.0l  10 Sep 2019",
+                0x101000CF,
+                pytest.raises(
+                    ImportError,
+                    match=f"^{re.escape('urllib3 v2.0 and later requires OpenSSL 1.1.1+.')}",
+                ),
+            ),
+            # expect OpenSSL 1.1.1+ not to raise anything
+            ("OpenSSL 1.1.1o  3 May 2022", 0x101010FF, nullcontext()),
+            ("OpenSSL 3.0.4 21 Jun 2022", 0x30000040, nullcontext()),
+            (ssl_.OPENSSL_VERSION, ssl_.OPENSSL_VERSION_NUMBER, nullcontext()),
+        ],
+    )
+    def test_old_openssl_unsupported(
+        self,
+        openssl_version: str,
+        openssl_version_number: int,
+        expectation: ContextManager[Any],
+    ) -> None:
+        with expectation:
+            ssl_._raise_if_openssl_unsupported(openssl_version, openssl_version_number)
