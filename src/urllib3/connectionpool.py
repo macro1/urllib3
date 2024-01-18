@@ -191,6 +191,7 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
     ):
         ConnectionPool.__init__(self, host, port)
         RequestMethods.__init__(self, headers)
+        self.closed = False
 
         if not isinstance(timeout, Timeout):
             timeout = Timeout.from_float(timeout)
@@ -201,7 +202,11 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
         self.timeout = timeout
         self.retries = retries
 
-        self.pool: queue.LifoQueue[typing.Any] | None = self.QueueCls(maxsize)
+        self.pool: queue.LifoQueue[typing.Any] | None
+        if maxsize:
+            self.pool = self.QueueCls(maxsize)
+        else:
+            self.pool = None
         self.block = block
 
         self.proxy = _proxy
@@ -209,8 +214,9 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
         self.proxy_config = _proxy_config
 
         # Fill the queue up so that doing get() on it will block properly
-        for _ in range(maxsize):
-            self.pool.put(None)
+        if self.pool:
+            for _ in range(maxsize):
+                self.pool.put(None)
 
         # These are mostly for testing and debugging purposes.
         self.num_connections = 0
@@ -226,15 +232,16 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
             self.conn_kw["proxy"] = self.proxy
             self.conn_kw["proxy_config"] = self.proxy_config
 
-        # Do not pass 'self' as callback to 'finalize'.
-        # Then the 'finalize' would keep an endless living (leak) to self.
-        # By just passing a reference to the pool allows the garbage collector
-        # to free self if nobody else has a reference to it.
-        pool = self.pool
+        if self.pool:
+            # Do not pass 'self' as callback to 'finalize'.
+            # Then the 'finalize' would keep an endless living (leak) to self.
+            # By just passing a reference to the pool allows the garbage collector
+            # to free self if nobody else has a reference to it.
+            pool = self.pool
 
-        # Close all the HTTPConnections in the pool before the
-        # HTTPConnectionPool object is garbage collected.
-        weakref.finalize(self, _close_pool_connections, pool)
+            # Close all the HTTPConnections in the pool before the
+            # HTTPConnectionPool object is garbage collected.
+            weakref.finalize(self, _close_pool_connections, pool)
 
     def _new_conn(self) -> BaseHTTPConnection:
         """
@@ -271,6 +278,10 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
         conn = None
 
         if self.pool is None:
+            # If the pool is not closed, pooling is disabled
+            if not self.closed:
+                return self._new_conn()
+
             raise ClosedPoolError(self, "Pool is closed.")
 
         try:
@@ -568,7 +579,7 @@ class HTTPConnectionPool(ConnectionPool, RequestMethods):
         if self.pool is None:
             return
         # Disable access to the pool
-        old_pool, self.pool = self.pool, None
+        old_pool, self.pool, self.closed = self.pool, None, True
 
         # Close all the HTTPConnections in the pool.
         _close_pool_connections(old_pool)
